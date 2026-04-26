@@ -10,7 +10,7 @@ A terminal UI to manage Frappe bench sites and databases.
 ## Install
 
 ```bash
-pipx install git+https://github.com/YOUR_USERNAME/frappe-bench-manager
+pipx install git+https://github.com/Sudhanshu-Badole/frappe-bench-manager
 ```
 
 ## Run

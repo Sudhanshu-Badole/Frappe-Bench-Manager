@@ -1,0 +1,2 @@
+[console_scripts]
+frappe-manager = frappe_bench_manager.app:main

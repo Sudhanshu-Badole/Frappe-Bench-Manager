@@ -1,0 +1,2 @@
+textual>=0.50.0
+mysql-connector-python>=8.0.0

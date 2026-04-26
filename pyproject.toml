@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=42", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "frappe-bench-manager"
+version = "1.0.0"
+description = "TUI app to manage Frappe bench sites and databases"
+requires-python = ">=3.10"
+dependencies = [
+    "textual>=0.50.0",
+    "mysql-connector-python>=8.0.0",
+]
+
+[project.scripts]
+frappe-manager = "frappe_bench_manager.app:main"

@@ -1,0 +1,7 @@
+Metadata-Version: 2.4
+Name: frappe-bench-manager
+Version: 1.0.0
+Summary: TUI app to manage Frappe bench sites and databases
+Requires-Python: >=3.10
+Requires-Dist: textual>=0.50.0
+Requires-Dist: mysql-connector-python>=8.0.0

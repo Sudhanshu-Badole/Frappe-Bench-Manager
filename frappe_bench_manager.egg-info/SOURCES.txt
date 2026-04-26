@@ -1,0 +1,10 @@
+README.md
+pyproject.toml
+frappe_bench_manager/__init__.py
+frappe_bench_manager/app.py
+frappe_bench_manager.egg-info/PKG-INFO
+frappe_bench_manager.egg-info/SOURCES.txt
+frappe_bench_manager.egg-info/dependency_links.txt
+frappe_bench_manager.egg-info/entry_points.txt
+frappe_bench_manager.egg-info/requires.txt
+frappe_bench_manager.egg-info/top_level.txt

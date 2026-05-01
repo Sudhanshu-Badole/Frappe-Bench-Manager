@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "frappe-bench-manager"
-version = "1.0.0"
+version = "1.1.0"
 description = "TUI app to manage Frappe bench sites and databases"
 requires-python = ">=3.10"
 dependencies = [

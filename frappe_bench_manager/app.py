@@ -17,7 +17,7 @@ from textual.containers import Horizontal, Container, Vertical
 from textual import on, work
 
 MYSQL_USER  = "root"
-SEARCH_ROOT = str(Path.home())   # Change if benches live elsewhere
+SEARCH_ROOT = str(Path.home())
 
 # ── Data Layer ────────────────────────────────────────────────────────────────
 
@@ -44,15 +44,11 @@ def db_size(cursor, db_name: str) -> str:
 
 def load_data(cursor, on_progress=None):
     sites, known_dbs = [], set()
-
     if on_progress:
         on_progress("Scanning for benches...")
-
     benches = find_benches(on_progress)
-
     if on_progress:
         on_progress(f"Found {len(benches)} bench(es). Reading site configs...")
-
     for bench_path in benches:
         sites_dir = bench_path / "sites"
         if not sites_dir.exists():
@@ -80,16 +76,13 @@ def load_data(cursor, on_progress=None):
                 })
             except Exception:
                 continue
-
     if on_progress:
         on_progress("Checking for orphaned databases...")
-
     cursor.execute("SHOW DATABASES")
     orphaned = []
     for (db,) in cursor.fetchall():
         if db.startswith("_") and db not in known_dbs:
             orphaned.append({"db_name": db, "size": db_size(cursor, db)})
-
     return sites, orphaned
 
 
@@ -143,7 +136,6 @@ class FrappeManager(App):
     CSS = """
     Screen { background: $background; }
 
-    /* ── Dialogs ── */
     PasswordScreen, ConfirmScreen { align: center middle; }
 
     #pw-dialog, #confirm-dialog {
@@ -157,7 +149,6 @@ class FrappeManager(App):
     Horizontal    { align: center middle; height: auto; margin-top: 1; }
     Button        { margin: 0 1; }
 
-    /* ── Loading overlay ── */
     #loading-overlay {
         width: 1fr; height: 1fr;
         align: center middle;
@@ -166,7 +157,6 @@ class FrappeManager(App):
         layer: overlay;
     }
     #loading-overlay.visible { display: block; }
-
     #loading-box {
         width: 50; height: 7;
         background: $surface;
@@ -180,7 +170,6 @@ class FrappeManager(App):
         margin-top: 1;
     }
 
-    /* ── Layout ── */
     DataTable { height: 1fr; }
 
     #actions {
@@ -198,18 +187,23 @@ class FrappeManager(App):
     """
 
     BINDINGS = [
-        ("d", "drop_selected", "Drop"),
-        ("r", "refresh",       "Refresh"),
-        ("q", "quit",          "Quit"),
+        ("space",   "toggle_select", "Select"),
+        ("ctrl+a",  "select_all",    "Select All"),
+        ("escape",  "clear_select",  "Clear"),
+        ("d",       "drop_selected", "Drop"),
+        ("r",       "refresh",       "Refresh"),
+        ("q",       "quit",          "Quit"),
     ]
 
     def __init__(self):
         super().__init__()
-        self.conn       = None
-        self.cursor     = None
-        self.mysql_pass = ""
-        self.sites: list    = []
-        self.orphaned: list = []
+        self.conn        = None
+        self.cursor      = None
+        self.mysql_pass  = ""
+        self.sites: list     = []
+        self.orphaned: list  = []
+        self.selected_sites: set[int]   = set()
+        self.selected_orphans: set[int] = set()
 
     # ── Compose ──────────────────────────────────────────────────
 
@@ -224,27 +218,22 @@ class FrappeManager(App):
             yield Button("⛔ Drop Selected", variant="error",   id="btn-drop")
             yield Button("🔄 Refresh",       variant="default", id="btn-refresh")
         yield Static("", id="status")
-
-        # Loading overlay — sits on top of everything
         with Container(id="loading-overlay"):
             with Vertical(id="loading-box"):
                 yield LoadingIndicator()
                 yield Label("Please wait…", id="loading-label")
-
         yield Footer()
 
     # ── Loading helpers ───────────────────────────────────────────
 
     def _show_loading(self, msg: str = "Please wait…"):
-        overlay = self.query_one("#loading-overlay")
-        overlay.add_class("visible")
+        self.query_one("#loading-overlay").add_class("visible")
         self.query_one("#loading-label", Label).update(msg)
 
     def _hide_loading(self):
         self.query_one("#loading-overlay").remove_class("visible")
 
     def _loading_progress(self, msg: str):
-        """Called from worker thread — must use call_from_thread."""
         self.call_from_thread(self._show_loading, msg)
 
     # ── Lifecycle ─────────────────────────────────────────────────
@@ -290,43 +279,102 @@ class FrappeManager(App):
             self.call_from_thread(self._status, f"[red]Load error: {e}[/red]")
 
     def _apply_data(self, sites, orphaned):
-        self.sites    = sites
-        self.orphaned = orphaned
+        self.sites            = sites
+        self.orphaned         = orphaned
+        self.selected_sites   = set()
+        self.selected_orphans = set()
         self._fill_sites()
         self._fill_orphaned()
         self._hide_loading()
-        wasted = sum(
-            float(o["size"].replace(" MB", "") or 0)
-            for o in self.orphaned
-        )
-        self._status(
-            f"  Sites: [green]{len(self.sites)}[/green]  │  "
-            f"Orphaned DBs: [yellow]{len(self.orphaned)}[/yellow]  │  "
-            f"Wasted Space: [red]{wasted:.1f} MB[/red]"
-        )
+        self._update_status()
 
     def _fill_sites(self):
         t = self.query_one("#sites-table", DataTable)
         t.clear(columns=True)
-        t.add_columns("Bench", "Site", "DB Name", "Size")
-        for s in self.sites:
-            t.add_row(s["bench"], s["site"], s["db_name"], s["size"])
+        t.add_columns(" ", "Bench", "Site", "DB Name", "Size")
+        for i, s in enumerate(self.sites):
+            t.add_row(
+                "✓" if i in self.selected_sites else " ",
+                s["bench"], s["site"], s["db_name"], s["size"]
+            )
 
     def _fill_orphaned(self):
         t = self.query_one("#orphaned-table", DataTable)
         t.clear(columns=True)
-        t.add_columns("DB Name", "Size", "Reason")
-        for o in self.orphaned:
-            t.add_row(o["db_name"], o["size"], "bench folder deleted / never had a site")
+        t.add_columns(" ", "DB Name", "Size", "Reason")
+        for i, o in enumerate(self.orphaned):
+            t.add_row(
+                "✓" if i in self.selected_orphans else " ",
+                o["db_name"], o["size"], "bench deleted / never had a site"
+            )
+
+    def _refresh_marks(self, table_id: str, count: int, selected: set):
+        t = self.query_one(f"#{table_id}", DataTable)
+        for i in range(count):
+            t.update_cell_at((i, 0), "✓" if i in selected else " ")
 
     def _status(self, msg: str):
         self.query_one("#status", Static).update(msg)
 
-    # ── Actions ───────────────────────────────────────────────────
+    def _update_status(self):
+        ns = len(self.selected_sites)
+        no = len(self.selected_orphans)
+        if ns or no:
+            self._status(
+                f"  [green]{ns} site(s)[/green] + "
+                f"[yellow]{no} orphan(s)[/yellow] selected  │  "
+                f"[dim]d=drop  Esc=clear  Ctrl+A=all[/dim]"
+            )
+        else:
+            wasted = sum(float(o["size"].replace(" MB","") or 0) for o in self.orphaned)
+            self._status(
+                f"  Sites: [green]{len(self.sites)}[/green]  │  "
+                f"Orphaned DBs: [yellow]{len(self.orphaned)}[/yellow]  │  "
+                f"Wasted Space: [red]{wasted:.1f} MB[/red]  │  "
+                f"[dim]Space=select  Ctrl+A=all[/dim]"
+            )
 
-    def action_refresh(self):
-        if self.cursor:
-            self._load()
+    # ── Selection ─────────────────────────────────────────────────
+
+    def _active_tab(self) -> str:
+        return self.query_one("#tabs", TabbedContent).active
+
+    def action_toggle_select(self):
+        tab = self._active_tab()
+        if tab == "tab-sites":
+            idx = self.query_one("#sites-table", DataTable).cursor_row
+            if not (0 <= idx < len(self.sites)):
+                return
+            self.selected_sites.symmetric_difference_update({idx})
+            self._refresh_marks("sites-table", len(self.sites), self.selected_sites)
+        elif tab == "tab-orphaned":
+            idx = self.query_one("#orphaned-table", DataTable).cursor_row
+            if not (0 <= idx < len(self.orphaned)):
+                return
+            self.selected_orphans.symmetric_difference_update({idx})
+            self._refresh_marks("orphaned-table", len(self.orphaned), self.selected_orphans)
+        self._update_status()
+
+    def action_select_all(self):
+        tab = self._active_tab()
+        if tab == "tab-sites":
+            self.selected_sites = set() if len(self.selected_sites) == len(self.sites) \
+                                        else set(range(len(self.sites)))
+            self._refresh_marks("sites-table", len(self.sites), self.selected_sites)
+        elif tab == "tab-orphaned":
+            self.selected_orphans = set() if len(self.selected_orphans) == len(self.orphaned) \
+                                          else set(range(len(self.orphaned)))
+            self._refresh_marks("orphaned-table", len(self.orphaned), self.selected_orphans)
+        self._update_status()
+
+    def action_clear_select(self):
+        self.selected_sites   = set()
+        self.selected_orphans = set()
+        self._refresh_marks("sites-table",    len(self.sites),    self.selected_sites)
+        self._refresh_marks("orphaned-table", len(self.orphaned), self.selected_orphans)
+        self._update_status()
+
+    # ── Drop ──────────────────────────────────────────────────────
 
     @on(Button.Pressed, "#btn-refresh")
     def on_refresh(self): self.action_refresh()
@@ -334,96 +382,102 @@ class FrappeManager(App):
     @on(Button.Pressed, "#btn-drop")
     def on_drop(self): self.action_drop_selected()
 
+    def action_refresh(self):
+        if self.cursor:
+            self._load()
+
     def action_drop_selected(self):
-        active = self.query_one("#tabs", TabbedContent).active
+        tab = self._active_tab()
 
-        if active == "tab-sites":
-            idx = self.query_one("#sites-table", DataTable).cursor_row
-            if not (0 <= idx < len(self.sites)):
+        if tab == "tab-sites":
+            # Use selection if any, else fall back to cursor row
+            indices = sorted(self.selected_sites) or \
+                      [self.query_one("#sites-table", DataTable).cursor_row]
+            targets = [self.sites[i] for i in indices if 0 <= i < len(self.sites)]
+            if not targets:
                 return
-            site = self.sites[idx]
-            msg  = (
-                f"Drop site [bold]{site['site']}[/bold]\n"
-                f"Bench : {site['bench']}\n"
-                f"DB    : {site['db_name']}  ({site['size']})\n\n"
-                f"[red]This will run  bench drop-site  — irreversible![/red]"
+            names = "\n".join(f"  • {t['site']}  ({t['size']})" for t in targets)
+            msg   = (
+                f"Drop [bold]{len(targets)} site(s)[/bold]:\n{names}\n\n"
+                f"[red]Runs bench drop-site for each — irreversible![/red]"
             )
             self.push_screen(
-                ConfirmScreen(msg, "Drop Site"),
-                lambda ok: self._drop_site(ok, site)
+                ConfirmScreen(msg, f"Drop {len(targets)} Site(s)"),
+                lambda ok: self._batch_drop_sites(ok, targets)
             )
 
-        elif active == "tab-orphaned":
-            idx = self.query_one("#orphaned-table", DataTable).cursor_row
-            if not (0 <= idx < len(self.orphaned)):
+        elif tab == "tab-orphaned":
+            indices = sorted(self.selected_orphans) or \
+                      [self.query_one("#orphaned-table", DataTable).cursor_row]
+            targets = [self.orphaned[i] for i in indices if 0 <= i < len(self.orphaned)]
+            if not targets:
                 return
-            db  = self.orphaned[idx]
-            msg = (
-                f"Drop orphaned DB [bold]{db['db_name']}[/bold]\n"
-                f"Size : {db['size']}\n\n"
-                f"[red]No bench — just  DROP DATABASE.  Irreversible![/red]"
+            names = "\n".join(f"  • {t['db_name']}  ({t['size']})" for t in targets)
+            msg   = (
+                f"Drop [bold]{len(targets)} database(s)[/bold]:\n{names}\n\n"
+                f"[red]Direct DROP DATABASE — irreversible![/red]"
             )
             self.push_screen(
-                ConfirmScreen(msg, "Drop DB"),
-                lambda ok: self._drop_orphan_db(ok, db["db_name"])
+                ConfirmScreen(msg, f"Drop {len(targets)} DB(s)"),
+                lambda ok: self._batch_drop_orphans(ok, targets)
             )
 
-    # ── Drop Handlers ─────────────────────────────────────────────
+    # ── Batch drop ────────────────────────────────────────────────
 
-    def _drop_site(self, confirmed: bool, site: dict):
+    def _batch_drop_sites(self, confirmed: bool, targets: list):
         if not confirmed:
             return
-        self._show_loading(f"Dropping site {site['site']}…")
-        self._run_drop_site(site)
+        self._show_loading(f"Dropping {len(targets)} site(s)…")
+        self._run_batch_drop_sites(targets)
 
     @work(thread=True)
-    def _run_drop_site(self, site: dict):
-        try:
-            self.call_from_thread(
-                self._show_loading, f"Running bench drop-site {site['site']}…"
-            )
-            result = subprocess.run(
-                [
-                    "bench", "drop-site", site["site"],
-                    "--root-password", self.mysql_pass,
-                    "--force", "--no-backup",
-                ],
-                cwd=site["bench_path"],
-                capture_output=True, text=True
-            )
-            if result.returncode == 0:
-                self.call_from_thread(
-                    self._status, f"[green]✓ Dropped site {site['site']}[/green]"
+    def _run_batch_drop_sites(self, targets: list):
+        errors = []
+        for site in targets:
+            self.call_from_thread(self._show_loading, f"Dropping {site['site']}…")
+            try:
+                result = subprocess.run(
+                    [
+                        "bench", "drop-site", site["site"],
+                        "--root-password", self.mysql_pass,
+                        "--force", "--no-backup",
+                    ],
+                    cwd=site["bench_path"],
+                    capture_output=True, text=True
                 )
-            else:
-                err = (result.stderr or result.stdout)[:120]
-                self.call_from_thread(self._status, f"[red]bench error: {err}[/red]")
-        except Exception as e:
-            self.call_from_thread(self._status, f"[red]Failed: {e}[/red]")
-        finally:
-            self._load_in_thread(self.cursor)
+                if result.returncode != 0:
+                    errors.append(f"{site['site']}: {(result.stderr or result.stdout)[:80]}")
+            except Exception as e:
+                errors.append(f"{site['site']}: {e}")
 
-    def _drop_orphan_db(self, confirmed: bool, db_name: str):
+        if errors:
+            self.call_from_thread(self._status, f"[red]Errors: {' | '.join(errors)}[/red]")
+        else:
+            self.call_from_thread(self._status, f"[green]✓ Dropped {len(targets)} site(s)[/green]")
+        self._load_in_thread(self.cursor)
+
+    def _batch_drop_orphans(self, confirmed: bool, targets: list):
         if not confirmed:
             return
-        self._show_loading(f"Dropping database {db_name}…")
-        self._run_drop_orphan(db_name)
+        self._show_loading(f"Dropping {len(targets)} database(s)…")
+        self._run_batch_drop_orphans(targets)
 
     @work(thread=True)
-    def _run_drop_orphan(self, db_name: str):
-        try:
-            self.call_from_thread(
-                self._show_loading, f"Dropping database {db_name}…"
-            )
-            self.cursor.execute(f"DROP DATABASE `{db_name}`")
-            self.conn.commit()
-            self.call_from_thread(
-                self._status, f"[green]✓ Dropped orphaned DB {db_name}[/green]"
-            )
-        except Exception as e:
-            self.call_from_thread(self._status, f"[red]Failed: {e}[/red]")
-        finally:
-            self._load_in_thread(self.cursor)
+    def _run_batch_drop_orphans(self, targets: list):
+        errors = []
+        for db in targets:
+            self.call_from_thread(self._show_loading, f"Dropping {db['db_name']}…")
+            try:
+                self.cursor.execute(f"DROP DATABASE `{db['db_name']}`")
+                self.conn.commit()
+            except Exception as e:
+                errors.append(f"{db['db_name']}: {e}")
+
+        if errors:
+            self.call_from_thread(self._status, f"[red]Errors: {' | '.join(errors)}[/red]")
+        else:
+            self.call_from_thread(self._status, f"[green]✓ Dropped {len(targets)} database(s)[/green]")
+        self._load_in_thread(self.cursor)
 
 
 def main():
